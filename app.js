@@ -319,16 +319,23 @@ function mountLogin() {
 /* Today */
 function todayView() {
   const d = new Date();
+  if (!S.cats.length) return `<div class="top"><h1>Today</h1></div><div class="card empty">No cats yet. Add them in the Cats tab.</div>`;
+  let sel = S.todayCat && cat(S.todayCat) ? S.todayCat : null;
+  if (!sel) { try { sel = localStorage.getItem('todayCat'); } catch (e) {} }
+  if (!sel || !cat(sel)) sel = S.cats[0].id;
+  S.todayCat = sel;
   const alerts = healthAlerts(14);
-  let html = `<div class="top"><div><h1>Today</h1><div class="sub">${esc(d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }))}</div></div></div>`;
-  if (alerts.length) {
-    const bad = alerts.some(a => !a.appt && a.diff <= 0);
-    html += `<div class="card alert-card ${bad ? 'bad' : ''}" data-act="tab" data-tab="health">` +
-      alerts.slice(0, 5).map(a => `<div class="alert-row">${avatar(cat(a.r.cat_id), 'sm')}<div class="grow">${esc(cat(a.r.cat_id)?.name)} · ${esc(a.r.title)}</div>${dueBadge(a.diff, a.appt)}</div>`).join('') +
-      (alerts.length > 5 ? `<div class="small muted">+${alerts.length - 5} more</div>` : '') + `</div>`;
+  const needs = id => alerts.some(a => a.r.cat_id === id && (a.appt ? a.diff <= 1 : a.diff <= 7)) ||
+    SLOTS.some(s => slotState(id, s).cls === 'due') || medDoses(id).some(x => !x.asNeeded && !x.ev);
+  let html = `<div class="today-top"><h1>Today</h1><span class="sub">${esc(d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }))}</span></div>`;
+  html += `<div class="cat-tabs">` + S.cats.map(c => `<button class="cat-tab ${c.id === sel ? 'sel' : ''}" style="--c:${esc(c.color)}" data-act="today-cat" data-cat="${c.id}">
+    ${avatar(c, 'sm')}<span>${esc(c.name)}</span>${needs(c.id) ? '<i class="dot"></i>' : ''}</button>`).join('') + `</div>`;
+  const mine = alerts.filter(a => a.r.cat_id === sel);
+  if (mine.length) {
+    const a = mine[0], bad = !a.appt && a.diff <= 0;
+    html += `<button class="alert-strip ${bad ? 'bad' : ''}" data-act="tab" data-tab="health">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}</span>${dueBadge(a.diff, a.appt)}${mine.length > 1 ? `<span class="more">+${mine.length - 1}</span>` : ''}</button>`;
   }
-  if (!S.cats.length) html += `<div class="card empty">No cats yet. Add them in the Cats tab.</div>`;
-  S.cats.forEach(c => { html += catCard(c); });
+  html += `<div id="today-swipe">${catCard(cat(sel))}</div>`;
   return html;
 }
 function catCard(c) {
@@ -355,7 +362,7 @@ function catCard(c) {
   const nV = evCount(c.id, e => e.kind === 'vomit'), nL = evCount(c.id, e => e.kind === 'litter'), nB = evCount(c.id, e => e.kind === 'behavior');
   const n = x => x ? ` <span class="n">${x}</span>` : '';
   return `<div class="card cat-card" style="--c:${esc(c.color)}">
-    <div class="cat-head">${avatar(c)}<div class="grow"><div class="cat-name">${esc(c.name)}</div>
+    <div class="cat-head"><div class="grow">
       <div class="cat-food">${diet && Number(diet.meal_g) ? `${esc(diet.food)} · ${round(Number(diet.meal_g), 1)} g × 4` : `<span class="link" data-act="diet" data-cat="${c.id}">Set food & grams →</span>`}</div></div>
       <button class="icon-btn" data-act="open-cat" data-cat="${c.id}" aria-label="Open ${esc(c.name)}">›</button></div>
     ${intake.target ? `<div class="progress"><div class="bar"><div class="fill" style="width:${pct}%"></div></div>
@@ -734,6 +741,7 @@ function medSheet(catId, medId) {
     <label class="f"><span>End (optional)</span><input class="inp" type="date" id="md-end" value="${esc(m?.end_date || '')}"></label></div>
     <div class="chips" id="md-quick"><button class="chip" data-d="5">5 days</button><button class="chip" data-d="7">1 week</button><button class="chip" data-d="14">2 weeks</button><button class="chip" data-m="1">1 month</button><button class="chip" data-m="6">6 months</button></div>
     <label class="f"><span>Notes</span><textarea class="inp" id="md-notes" placeholder="with food, prescribed by…">${esc(m?.notes || '')}</textarea></label>
+    ${m && m.kind !== 'as_needed' && m.active ? `<button class="btn cal full" id="md-cal" style="margin-top:6px">📅 Daily reminder in calendar</button>` : ''}
     <div class="btn-row">${m ? `<button class="btn danger" id="md-del">Delete</button>${m.active ? `<button class="btn soft" id="md-stop">Stop</button>` : ''}` : ''}<button class="btn" id="md-save">Save</button></div>`,
   sh => {
     const help = { daily: 'Every day — leave End empty if ongoing.', course: 'For a set number of days, at set times.', as_needed: 'Log it only when you give it.' };
@@ -752,14 +760,43 @@ function medSheet(catId, medId) {
       const row = { cat_id: catId, name, dose: $('#md-dose', sh).value.trim() || null, kind, times: [...new Set(times)],
         start_date: $('#md-start', sh).value || today(), end_date: $('#md-end', sh).value || null, notes: $('#md-notes', sh).value.trim() || null };
       if (row.end_date && row.end_date < row.start_date) { toast('End date is before the start'); return; }
-      if (m) await update('meds', m.id, { ...row, active: row.end_date && row.end_date < today() ? m.active : true });
-      else await insert('meds', row);
-      closeSheet(); toast(`💊 ${name} saved`);
+      const saved = m ? await update('meds', m.id, { ...row, active: row.end_date && row.end_date < today() ? m.active : true }) : await insert('meds', row);
+      if (saved.kind !== 'as_needed' && saved.active && (!saved.end_date || saved.end_date >= today())) medCalSheet(saved.id, true);
+      else { closeSheet(); toast(`💊 ${name} saved`); }
     });
+    const cal = $('#md-cal', sh);
+    if (cal) cal.onclick = () => medCalSheet(m.id);
     const del = $('#md-del', sh);
     if (del) del.onclick = () => confirmSheet('Delete medication?', `This removes ${m.name}. The history of given doses stays.`, 'Delete', () => remove('meds', m.id));
     const stop = $('#md-stop', sh);
     if (stop) stop.onclick = () => busy(stop, async () => { await update('meds', m.id, { active: false, end_date: today() < m.start_date ? m.start_date : today() }); closeSheet(); toast(`${m.name} stopped`); });
+  });
+}
+function medCalUrl(m, time) {
+  const c = cat(m.cat_id);
+  const start = m.start_date > today() ? m.start_date : today();
+  const [h, mi] = time.split(':').map(Number);
+  const st = `${start.replaceAll('-', '')}T${pad(h)}${pad(mi)}00`;
+  const endMin = h * 60 + mi + 15;
+  const en = `${start.replaceAll('-', '')}T${pad(Math.min(23, Math.floor(endMin / 60)))}${pad(endMin >= 24 * 60 ? 59 : endMin % 60)}00`;
+  const rule = `RRULE:FREQ=DAILY${m.end_date ? `;UNTIL=${m.end_date.replaceAll('-', '')}T235959Z` : ''}`;
+  const details = `${m.name}${m.dose ? ` – ${m.dose}` : ''} for ${c?.name}${m.notes ? '\n' + m.notes : ''}\nTick it off in Cat Tracker when given.`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(`💊 ${c?.name} – ${m.name}`)}&dates=${st}/${en}&ctz=Europe/Athens&recur=${encodeURIComponent(rule)}&details=${encodeURIComponent(details)}`;
+}
+function medCalSheet(medId, justSaved) {
+  const m = byId(S.meds, medId); if (!m) return;
+  const c = cat(m.cat_id), times = m.times && m.times.length ? [...m.times].sort() : null;
+  const until = m.end_date ? `until ${fmtDate(m.end_date)}` : 'with no end date';
+  openSheet(`<h2>📅 Reminder for ${esc(m.name)}</h2>
+    <div class="sheet-sub">${justSaved ? 'Saved ✓ · ' : ''}${esc(c?.name)} · every day ${esc(until)}</div>
+    ${times ? times.map(t => `<a class="btn cal full" style="margin-top:8px" href="${esc(medCalUrl(m, t))}" target="_blank" rel="noopener">📅 Add daily ${esc(t)} reminder</a>`).join('')
+      : `<label class="f"><span>Remind at</span><input class="inp" type="time" id="mc-time" value="20:00"></label>
+         <a class="btn cal full" id="mc-link" href="${esc(medCalUrl(m, '20:00'))}" target="_blank" rel="noopener">📅 Add daily reminder</a>`}
+    <div class="muted small" style="text-align:center;margin:8px 0 0;font-weight:600">Opens Google Calendar: pick the family calendar, then Save${times && times.length > 1 ? ' (once for each time)' : ''}</div>
+    <div class="btn-row"><button class="btn soft" data-act="close">${justSaved ? 'Skip' : 'Done'}</button></div>`,
+  sh => {
+    const ti = $('#mc-time', sh);
+    if (ti) ti.oninput = () => { if (/^\d{2}:\d{2}$/.test(ti.value)) $('#mc-link', sh).href = medCalUrl(m, ti.value); };
   });
 }
 async function medTap(medId, key) {
@@ -931,6 +968,7 @@ const ACT = {
   litter: d => litterSheet(d.cat),
   weight: d => weightSheet(d.cat),
   behavior: d => behaviorSheet(d.cat),
+  'today-cat': d => { S.todayCat = d.cat; try { localStorage.setItem('todayCat', d.cat); } catch (e) {} render(); },
   'add-counter': d => counterAddSheet(d.cat),
   'counter-del': d => { const k = byId(S.counters, d.id); confirmSheet(`Remove “${k.label}” button?`, 'Past entries stay in the history.', 'Remove', () => remove('counters', k.id)); },
   diet: d => dietSheet(d.cat),
@@ -960,6 +998,16 @@ document.addEventListener('click', e => {
   const fn = ACT[el.dataset.act];
   if (fn) { e.preventDefault(); fn(el.dataset, el); }
 });
+
+let swX = null, swY = null;
+document.addEventListener('touchstart', e => { if (S.tab !== 'today' || sheetOpen || !e.target.closest('#today-swipe')) { swX = null; return; } swX = e.touches[0].clientX; swY = e.touches[0].clientY; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (swX == null) return;
+  const dx = e.changedTouches[0].clientX - swX, dy = e.changedTouches[0].clientY - swY; swX = null;
+  if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * .6) return;
+  const i = S.cats.findIndex(c => c.id === S.todayCat), j = i + (dx < 0 ? 1 : -1);
+  if (S.cats[j]) ACT['today-cat']({ cat: S.cats[j].id });
+}, { passive: true });
 
 /* ---------- auth & start ---------- */
 function passwordSheet() {
