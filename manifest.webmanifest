@@ -1,7 +1,7 @@
 {
   "name": "Cat Tracker",
   "short_name": "Cats",
-  "description": "Θωμάς, Σίσσυ & Φώτης — meals, health and behaviour",
+  "description": "Meals, health and behaviour for your cats",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

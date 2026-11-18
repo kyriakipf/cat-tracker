@@ -166,7 +166,7 @@ textarea.inp { min-height: 80px; resize: vertical; }
 .swatch.sel { box-shadow: 0 0 0 3px var(--ink); }
 
 /* Toast */
-#toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 14px); z-index: 60; background: var(--ink); color: #fff; padding: 11px 14px 11px 18px; border-radius: 16px; font-weight: 700; display: flex; align-items: center; gap: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.2); max-width: calc(100% - 28px); animation: up .2s; }
+#toast { width: max-content; position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 14px); z-index: 60; background: var(--ink); color: #fff; padding: 11px 14px 11px 18px; border-radius: 16px; font-weight: 700; display: flex; align-items: center; gap: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.2); max-width: calc(100% - 28px); animation: up .2s; }
 #toast button { color: #FFC9A8; font-weight: 800; padding: 4px 6px; }
 
 /* Charts */
@@ -217,3 +217,13 @@ textarea.inp { min-height: 80px; resize: vertical; }
 .alert-strip .as-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; font-weight: 700; font-size: 14px; padding: 3px 0; }
 .alert-strip .as-main .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alert-strip .more { padding: 4px 6px; }
+
+#update-bar { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 50%; transform: translateX(-50%); z-index: 70; display: flex; align-items: center; gap: 14px; background: var(--ink); color: #fff; padding: 9px 9px 9px 16px; border-radius: 16px; font-weight: 700; box-shadow: 0 6px 20px rgba(0,0,0,.2); width: max-content; max-width: calc(100% - 24px); animation: up .25s; }
+#update-bar button { background: var(--accent); color: #fff; font-weight: 800; padding: 8px 14px; border-radius: 11px; }
+
+/* Sticky header + filters on Health and History */
+.sticky-head { position: sticky; top: 0; z-index: 12; background: var(--bg); margin: calc(-14px - env(safe-area-inset-top)) -14px 8px; padding: calc(env(safe-area-inset-top) + 14px) 14px 2px; transition: box-shadow .2s; }
+.sticky-head.stuck { box-shadow: 0 6px 12px -8px rgba(110, 70, 40, .25); }
+.sticky-head .htabs { margin-bottom: 8px; }
+
+.demo-bar { background: #EEE7FA; color: #5B3F8C; border-radius: 12px; padding: 7px 12px; font-size: 13px; font-weight: 700; margin: -4px 0 10px; }

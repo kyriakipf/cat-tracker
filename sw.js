@@ -1,7 +1,7 @@
 // Keeps the app shell available and lets Android install it as an app.
 // Network first, so updates show up straight away; cache is the fallback.
-const CACHE = 'cat-tracker-v2';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'cat-tracker-v4';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'demo.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
   // Cache each file on its own, so one missing file can't stop the app installing.
@@ -19,7 +19,7 @@ self.addEventListener('fetch', e => {
   const cdn = /cdn\.jsdelivr\.net|fonts\.(googleapis|gstatic)\.com/.test(url.host);
   if (!sameOrigin && !cdn) return; // never touch database traffic
   e.respondWith(
-    fetch(e.request).then(res => {
+    (sameOrigin ? fetch(e.request.url, { cache: 'no-cache' }) : fetch(e.request)).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
       return res;
     }).catch(() => caches.match(e.request).then(r => r || caches.match('index.html')))

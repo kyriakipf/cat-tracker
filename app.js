@@ -1,4 +1,4 @@
-/* Cat Tracker — Θωμάς, Σίσσυ & Φώτης */
+/* Cat Tracker */
 (() => {
 'use strict';
 
@@ -7,12 +7,19 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
 
+const isDemo = () => !!(S.user && window.CatDemo && CatDemo.isDemo(S.user.email));
+const db = () => isDemo() ? CatDemo.client : sb;
 const TABLES = ['cats', 'diets', 'meals', 'counters', 'events', 'meds', 'health'];
 const S = {
   user: null, tab: 'today', loaded: false, loadError: null,
   cats: [], diets: [], meals: [], counters: [], events: [], meds: [], health: [],
   catId: null, histCat: 'all', histKind: 'all', histLimit: 150, healthCat: 'all',
 };
+const APP_VERSION = '2026-11-18.6';
+const VIEW_KEYS = ['tab', 'catId', 'healthTab', 'healthCat', 'histCat', 'histKind'];
+try { Object.assign(S, Object.fromEntries(Object.entries(JSON.parse(localStorage.getItem('view') || '{}')).filter(([k]) => VIEW_KEYS.includes(k)))); } catch (e) {}
+if (!['today', 'health', 'history', 'cats'].includes(S.tab)) S.tab = 'today';
+function saveView() { try { localStorage.setItem('view', JSON.stringify(Object.fromEntries(VIEW_KEYS.map(k => [k, S[k]])))); } catch (e) {} }
 
 /* ---------- constants ---------- */
 const SLOTS = [
@@ -93,7 +100,7 @@ function ageText(b) {
 async function fetchAll(table, full = false) {
   let all = [];
   for (let from = 0; ; from += 1000) {
-    let q = sb.from(table).select('*').order('id').range(from, from + 999);
+    let q = db().from(table).select('*').order('id').range(from, from + 999);
     if (!full && table === 'meals') q = q.gte('day', addDays(today(), -120));
     if (!full && table === 'events') q = q.gte('at', new Date(Date.now() - 400 * 864e5).toISOString());
     const { data, error } = await q;
@@ -130,7 +137,7 @@ function scheduleReload(t) {
 }
 let channel = null;
 function subscribe() {
-  if (channel) return;
+  if (channel || isDemo()) return;
   channel = sb.channel('cat-sync')
     .on('postgres_changes', { event: '*', schema: 'public' }, p => scheduleReload(p.table))
     .subscribe();
@@ -146,17 +153,17 @@ async function run(promise) {
   return data;
 }
 async function insert(t, row) {
-  const data = await run(sb.from(t).insert(row).select().single());
+  const data = await run(db().from(t).insert(row).select().single());
   S[t] = S[t].filter(x => x.id !== data.id).concat(data); sortTable(t); render();
   return data;
 }
 async function update(t, id, patch) {
-  const data = await run(sb.from(t).update(patch).eq('id', id).select().single());
+  const data = await run(db().from(t).update(patch).eq('id', id).select().single());
   S[t] = S[t].map(x => x.id === id ? data : x); sortTable(t); render();
   return data;
 }
 async function remove(t, id) {
-  await run(sb.from(t).delete().eq('id', id));
+  await run(db().from(t).delete().eq('id', id));
   S[t] = S[t].filter(x => x.id !== id); render();
 }
 
@@ -268,6 +275,13 @@ function render() {
   const app = $('#app'), tabs = $('#tabs');
   if (!S.user) { tabs.hidden = true; app.innerHTML = loginView(); mountLogin(); return; }
   tabs.hidden = false;
+  if (S.loaded) {
+    const ok = id => id === 'all' || S.cats.some(c => c.id === id);
+    if (!ok(S.healthCat)) S.healthCat = 'all';
+    if (!ok(S.histCat)) S.histCat = 'all';
+    if (S.catId && !S.cats.some(c => c.id === S.catId)) S.catId = null;
+    saveView();
+  }
   tabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   if (!S.loaded) {
     app.innerHTML = S.loadError ? errorView() : `<div class="boot"><div class="boot-paw">🐾</div></div>`;
@@ -285,7 +299,7 @@ function errorView() {
 
 /* Login */
 function loginView() {
-  return `<div class="login"><div class="logo">🐾</div><h1>Cat Tracker</h1><div class="muted">Θωμάς · Σίσσυ · Φώτης</div>
+  return `<div class="login"><div class="logo">🐾</div><h1>Cat Tracker</h1><div class="muted">Meals, health and behaviour for your cats</div>
   <form id="login-form">
     <label class="f"><span>Email</span><input class="inp" type="email" id="lg-email" autocomplete="email" required></label>
     <label class="f"><span>Password</span><input class="inp" type="password" id="lg-pass" autocomplete="current-password" required></label>
@@ -322,6 +336,7 @@ function todayView() {
   const needs = id => alerts.some(a => a.r.cat_id === id && (a.appt ? a.diff <= 1 : a.diff <= 7)) ||
     SLOTS.some(s => slotState(id, s).cls === 'due') || medDoses(id).some(x => !x.asNeeded && !x.ev);
   let html = `<div class="today-top"><h1>Today</h1><span class="sub">${esc(d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }))}</span></div>`;
+  if (isDemo()) html += `<div class="demo-bar">🧪 Demo mode: sample cats, changes stay on this phone and reset daily</div>`;
   html += `<div class="cat-tabs">` + S.cats.map(c => `<button class="cat-tab ${c.id === sel ? 'sel' : ''}" style="--c:${esc(c.color)}" data-act="today-cat" data-cat="${c.id}">
     ${avatar(c, 'sm')}<span>${esc(c.name)}</span>${needs(c.id) ? '<i class="dot"></i>' : ''}</button>`).join('') + `</div>`;
   const mine = alerts.filter(a => a.r.cat_id === sel);
@@ -392,9 +407,9 @@ function sameGroupCats(r) {
 }
 function healthView() {
   const f = S.healthCat, tab = S.healthTab || 'upcoming', t = today();
-  let html = `<div class="top"><div><h1>Health</h1><div class="sub">Vaccines, antiparasitics & vet</div></div></div>`;
+  let html = `<div class="sticky-head"><div class="top"><div><h1>Health</h1><div class="sub">Vaccines, antiparasitics & vet</div></div></div>`;
   html += catFilter('health-cat', f);
-  html += `<div class="seg htabs">` + HTABS.map(([k, i, l]) => `<button class="${tab === k ? 'sel' : ''}" data-act="health-tab" data-k="${k}"><span>${i}</span>${l}</button>`).join('') + `</div>`;
+  html += `<div class="seg htabs">` + HTABS.map(([k, i, l]) => `<button class="${tab === k ? 'sel' : ''}" data-act="health-tab" data-k="${k}"><span>${i}</span>${l}</button>`).join('') + `</div></div>`;
   const ids = rs => rs.map(x => x.id).join(',');
   if (tab === 'upcoming') {
     const alerts = healthAlerts(30).filter(a => f === 'all' || a.r.cat_id === f);
@@ -459,9 +474,9 @@ function evDisplay(e) {
   return { ico: '•', t: k, s: e.note };
 }
 function historyView() {
-  let html = `<div class="top"><div><h1>History</h1><div class="sub">Everything that happened</div></div></div>`;
+  let html = `<div class="sticky-head"><div class="top"><div><h1>History</h1><div class="sub">Everything that happened</div></div></div>`;
   html += catFilter('hist-cat', S.histCat);
-  html += `<div class="filters">` + HFILTERS.map(([k, t]) => `<button class="chip ${S.histKind === k ? 'sel' : ''}" data-act="hist-kind" data-k="${k}">${t}</button>`).join('') + `</div>`;
+  html += `<div class="filters">` + HFILTERS.map(([k, t]) => `<button class="chip ${S.histKind === k ? 'sel' : ''}" data-act="hist-kind" data-k="${k}">${t}</button>`).join('') + `</div></div>`;
   const items = historyItems();
   if (!items.length) return html + `<div class="card empty">Nothing logged yet 🐾</div>`;
   let lastDay = null, open = false;
@@ -500,6 +515,7 @@ function catsView() {
   html += `<button class="btn soft full" data-act="cat-add">＋ Add a cat</button>`;
   html += `<div class="section-lbl" style="margin-top:22px">Your data</div><div class="card">
     <div class="row" data-act="export"><div class="r-ico">📦</div><div class="grow"><div class="r-t">Backup everything</div><div class="r-s">Download a spreadsheet with all records</div></div></div>
+    ${isDemo() ? `<div class="row" data-act="demo-reset"><div class="r-ico">🔄</div><div class="grow"><div class="r-t">Reset demo data</div><div class="r-s">Start over with the sample cats</div></div></div>` : ''}
     <div class="row" data-act="signout"><div class="r-ico">👋</div><div class="grow"><div class="r-t">Sign out</div><div class="r-s">${esc(S.user.email)}</div></div></div></div>`;
   return html;
 }
@@ -604,7 +620,7 @@ function mealSheet(catId, slotK, day = today()) {
   sh => {
     sh.querySelectorAll('[data-amt]').forEach(b => b.onclick = () => busy(b, async () => {
       const row = { cat_id: catId, day, slot: slotK, amount: b.dataset.amt, food: $('#ml-food', sh).value.trim() || null, served_g: num($('#ml-g', sh).value), at: fromLocalInput($('#ml-at', sh).value), by_email: m ? m.by_email : S.user.email };
-      const data = await run(sb.from('meals').upsert(row, { onConflict: 'cat_id,day,slot' }).select().single());
+      const data = await run(db().from('meals').upsert(row, { onConflict: 'cat_id,day,slot' }).select().single());
       S.meals = S.meals.filter(x => x.id !== data.id && !(x.cat_id === catId && x.day === day && x.slot === slotK)).concat(data);
       closeSheet(); render();
       toast(`${AMT[b.dataset.amt].ico} ${c.name}: ${AMT[b.dataset.amt].t.toLowerCase()}`);
@@ -836,7 +852,7 @@ const repeatOf = r => r.repeat_months != null ? Number(r.repeat_months) || 0
   : (r.next_due && r.on_date && r.kind !== 'vet' ? Math.max(0, Math.round(diffDays(r.on_date, r.next_due) / 30.44)) : 0);
 const repeatText = n => !n ? '' : n === 1 ? 'every month' : n === 12 ? 'every year' : n % 12 === 0 ? `every ${n / 12} years` : `every ${n} months`;
 async function saveHealthRows(rows, id) {
-  const go = rs => id ? sb.from('health').update(rs[0]).eq('id', id).select() : sb.from('health').insert(rs).select();
+  const go = rs => id ? db().from('health').update(rs[0]).eq('id', id).select() : db().from('health').insert(rs).select();
   let { data, error } = await go(rows);
   if (error && /repeat_months|appt_time/.test(error.message || '')) { // database not updated yet: save without new fields
     ({ data, error } = await go(rows.map(({ repeat_months, appt_time, ...x }) => x)));
@@ -931,7 +947,7 @@ function healthSheet(id, opts = {}) {
   });
 }
 async function setVetDone(ids, when) {
-  const { data, error } = await sb.from('health').update({ done_at: when }).in('id', ids).select();
+  const { data, error } = await db().from('health').update({ done_at: when }).in('id', ids).select();
   if (error) {
     toast(/done_at/.test(error.message || '') ? '⚠️ Run the small database update first (see Claude\'s message)' : '⚠️ ' + error.message, [], 7000);
     return false;
@@ -1073,7 +1089,7 @@ const ACT = {
   med: d => medTap(d.med, d.key).catch(() => {}),
   'med-edit': d => medSheet(d.cat, d.id),
   'open-cat': d => { if (S.tab !== 'cats' || S.catId !== d.cat) history.pushState({ cat: d.cat }, ''); S.tab = 'cats'; S.catId = d.cat; render(); window.scrollTo(0, 0); },
-  back: () => history.back(),
+  back: () => { if (history.state && history.state.cat) history.back(); else { S.catId = null; render(); window.scrollTo(0, 0); } },
   'cat-edit': d => catSheet(d.cat),
   'cat-add': () => catSheet(null),
   'cat-health': d => { S.tab = 'health'; S.healthCat = d.cat; S.catId = null; render(); window.scrollTo(0, 0); },
@@ -1091,6 +1107,7 @@ const ACT = {
   'hist-more': () => { S.histLimit += 150; render(); },
   'ev-edit': d => eventSheet(d.id),
   export: () => exportAll(),
+  'demo-reset': () => confirmSheet('Reset demo data?', 'All demo changes are replaced with the sample cats again.', 'Reset', async () => { CatDemo.reset(); S.catId = null; await loadAll(); toast('Demo data reset'); }),
   signout: () => confirmSheet('Sign out?', 'You will need your password to sign in again.', 'Sign out', async () => { await sb.auth.signOut(); }),
 };
 document.addEventListener('click', e => {
@@ -1135,6 +1152,37 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 setInterval(() => { if (S.user && S.loaded && document.visibilityState === 'visible' && !sheetOpen) render(); }, 60000); // keep "due" states fresh
 
 sb.auth.getSession().then(({ data }) => { if (!data.session) render(); });
+
+window.addEventListener('scroll', () => { const h = document.querySelector('.sticky-head'); if (h) h.classList.toggle('stuck', window.scrollY > 4); }, { passive: true });
+
+/* ---------- new version check ---------- */
+let updateShown = false;
+async function checkVersion() {
+  if (updateShown || location.protocol !== 'https:') return;
+  try {
+    const v = (await (await fetch('version.txt?t=' + Date.now(), { cache: 'no-store' })).text()).trim();
+    if (v && v !== APP_VERSION && /^[\w.-]{1,40}$/.test(v)) showUpdate();
+  } catch (e) { /* offline */ }
+}
+function showUpdate() {
+  updateShown = true;
+  const bar = document.createElement('div');
+  bar.id = 'update-bar';
+  bar.innerHTML = `<span>✨ A new version is ready</span><button>Update</button>`;
+  bar.querySelector('button').onclick = async () => {
+    bar.querySelector('button').textContent = 'Updating…';
+    try {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (reg) await reg.update();
+      if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+    } catch (e) {}
+    location.reload();
+  };
+  document.body.appendChild(bar);
+}
+checkVersion();
+setInterval(checkVersion, 5 * 60000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkVersion(); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 window.__cat = { S, render }; // for debugging
 })();
