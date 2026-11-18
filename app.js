@@ -225,14 +225,7 @@ function calUrl(title, day, details) {
   const s = day.replaceAll('-', ''), e = addDays(day, 1).replaceAll('-', '');
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${s}/${e}&details=${encodeURIComponent(details || '')}`;
 }
-function healthCal(r) {
-  const c = cat(r.cat_id), t = today();
-  const appt = r.kind === 'vet' && r.on_date >= t;
-  const day = appt ? r.on_date : r.next_due;
-  if (!day) return null;
-  const title = appt ? `🐱 ${c?.name} – vet: ${r.title}` : `🐱 ${c?.name} – ${r.title} due`;
-  return calUrl(title, day, `${HKIND[r.kind].one} for ${c?.name}${r.notes ? '\n' + r.notes : ''}\n(from Cat Tracker)`);
-}
+function healthCal(r) { const g = healthCalGroup([r]); return g && g.url; }
 
 /* ---------- UI plumbing ---------- */
 let toastTimer;
@@ -814,67 +807,119 @@ async function medTap(medId, key) {
   const ev2 = await insert('events', { cat_id: m.cat_id, kind: 'med_given', ref_id: m.id, label: key, note: snapshot });
   toast(`💊 ${c.name}: ${m.name} ✓`, [{ t: 'Undo', fn: () => remove('events', ev2.id) }]);
 }
-function healthSheet(id, preCat) {
+const REPEATS = [[0, 'Once'], [1, 'Monthly'], [3, '3 months'], [6, '6 months'], [12, 'Yearly']];
+const repeatOf = r => r.repeat_months != null ? Number(r.repeat_months) || 0
+  : (r.next_due && r.on_date && r.kind !== 'vet' ? Math.max(0, Math.round(diffDays(r.on_date, r.next_due) / 30.44)) : 0);
+const repeatText = n => !n ? '' : n === 1 ? 'every month' : n === 12 ? 'every year' : n % 12 === 0 ? `every ${n / 12} years` : `every ${n} months`;
+async function saveHealthRows(rows, id) {
+  const go = rs => id ? sb.from('health').update(rs[0]).eq('id', id).select() : sb.from('health').insert(rs).select();
+  let { data, error } = await go(rows);
+  if (error && /repeat_months/.test(error.message || '')) { // database not updated yet: save without it
+    ({ data, error } = await go(rows.map(({ repeat_months, ...x }) => x)));
+    if (!error) toast('Saved — run the small database update to remember the repeat');
+  }
+  if (error) { toast('⚠️ ' + error.message); throw error; }
+  const ids = data.map(x => x.id);
+  S.health = S.health.filter(x => !ids.includes(x.id)).concat(data); sortTable('health'); render();
+  return data;
+}
+function healthCalGroup(rs) {
+  const r = rs[0], t = today(), appt = r.kind === 'vet' && r.on_date >= t;
+  const day = appt ? r.on_date : r.next_due;
+  if (!day) return null;
+  const names = rs.length === S.cats.length && rs.length > 1 ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(' & ');
+  const title = appt ? `🐱 ${names} – vet: ${r.title}` : `🐱 ${names} – ${r.title} due`;
+  const rep = appt ? 0 : repeatOf(r);
+  let u = calUrl(title, day, `${HKIND[r.kind].one} for ${names}${rep ? ` (${repeatText(rep)})` : ''}${r.notes ? '\n' + r.notes : ''}\n(from Cat Tracker)`);
+  if (rep) u += `&recur=${encodeURIComponent(`RRULE:FREQ=MONTHLY;INTERVAL=${rep}`)}`;
+  return { url: u, rep };
+}
+function healthSheet(id, opts = {}) {
   const r = id ? byId(S.health, id) : null;
-  let kind = r?.kind || 'vaccine';
-  let catId = r?.cat_id || preCat || (S.healthCat !== 'all' ? S.healthCat : S.cats[0]?.id);
-  openSheet(`<h2>${r ? 'Edit record' : 'New health record'}</h2>
-    <div class="chips" id="h-cat" style="margin:8px 0">${S.cats.map(c => `<button class="chip" data-c="${c.id}">${avatar(c, 'sm')} ${esc(c.name)}</button>`).join('')}</div>
+  let kind = r?.kind || opts.kind || 'vaccine';
+  let cats = r ? [r.cat_id] : (opts.cats || [opts.cat || (S.healthCat !== 'all' ? S.healthCat : null)].filter(Boolean));
+  if (!cats.length) cats = S.cats.length === 1 ? [S.cats[0].id] : [];
+  let repeat = r ? repeatOf(r) : (opts.repeat ?? 0);
+  const startDate = opts.date || r?.on_date || today();
+  openSheet(`<h2>${r ? 'Edit record' : opts.title ? 'Log next dose' : 'New health record'}</h2>
+    <div class="chips" id="h-cat" style="margin:8px 0">${!r && S.cats.length > 1 ? `<button class="chip" data-c="all">🐾 All cats</button>` : ''}${S.cats.map(c => `<button class="chip" data-c="${c.id}">${avatar(c, 'sm')} ${esc(c.name)}</button>`).join('')}</div>
     <div class="seg" id="h-kind">${Object.entries(HKIND).map(([k, K]) => `<button data-k="${k}">${K.ico} ${K.one}</button>`).join('')}</div>
-    <label class="f"><span id="h-title-l">Name</span><input class="inp" id="h-title" value="${esc(r?.title || '')}"></label>
+    <label class="f"><span id="h-title-l">Name</span><input class="inp" id="h-title" value="${esc(r?.title || opts.title || '')}"></label>
     <div class="chips" id="h-sugg"></div>
-    <label class="f"><span id="h-date-l">Date</span><input class="inp" type="date" id="h-date" value="${esc(r?.on_date || today())}"></label>
-    <label class="f"><span>Next due (optional)</span><input class="inp" type="date" id="h-next" value="${esc(r?.next_due || '')}"></label>
-    <div class="chips" id="h-quick"><button class="chip" data-m="1">+1 month</button><button class="chip" data-m="3">+3 months</button><button class="chip" data-m="6">+6 months</button><button class="chip" data-m="12">+1 year</button><button class="chip" data-m="36">+3 years</button></div>
+    <label class="f"><span id="h-date-l">Date</span><input class="inp" type="date" id="h-date" value="${esc(startDate)}"></label>
+    <label class="f" id="h-rep-f"><span>Repeats</span><div class="seg" id="h-rep">${REPEATS.map(([n, t]) => `<button data-n="${n}">${t}</button>`).join('')}</div></label>
+    <label class="f"><span>Next due</span><input class="inp" type="date" id="h-next" value="${esc(r?.next_due || '')}"></label>
     <label class="f"><span>Notes</span><textarea class="inp" id="h-notes" placeholder="product, vet's advice, batch number…">${esc(r?.notes || '')}</textarea></label>
     <div class="btn-row">${r ? `<button class="btn danger" id="h-del">Delete</button>` : ''}<button class="btn" id="h-save">Save</button></div>`,
   sh => {
-    const setCat = id2 => { catId = id2; sh.querySelectorAll('#h-cat .chip').forEach(b => b.classList.toggle('sel', b.dataset.c === id2)); };
+    const drawCats = () => {
+      const all = cats.length === S.cats.length;
+      sh.querySelectorAll('#h-cat .chip').forEach(b => b.classList.toggle('sel', b.dataset.c === 'all' ? all : cats.includes(b.dataset.c)));
+    };
+    sh.querySelectorAll('#h-cat .chip').forEach(b => b.onclick = () => {
+      const c = b.dataset.c;
+      if (r) cats = [c];
+      else if (c === 'all') cats = cats.length === S.cats.length ? [] : S.cats.map(x => x.id);
+      else cats = cats.includes(c) ? cats.filter(x => x !== c) : [...cats, c];
+      drawCats();
+    });
+    const setNext = () => { if (repeat) $('#h-next', sh).value = addMonths($('#h-date', sh).value || today(), repeat); };
+    const setRepeat = (n, recalc = true) => {
+      repeat = n; sh.querySelectorAll('#h-rep button').forEach(b => b.classList.toggle('sel', Number(b.dataset.n) === n));
+      if (recalc) { if (n) setNext(); else if (!r) $('#h-next', sh).value = ''; }
+    };
     const setKind = k => {
       kind = k; sh.querySelectorAll('#h-kind button').forEach(b => b.classList.toggle('sel', b.dataset.k === k));
       const prev = [...new Set(S.health.filter(x => x.kind === k).map(x => x.title))];
       const sugg = [...new Set([...prev, ...HKIND[k].sugg])].slice(0, 8);
-      $('#h-sugg', sh).innerHTML = sugg.map(s => `<button class="chip" data-s="${esc(s)}">${esc(s)}</button>`).join('');
-      $('#h-sugg', sh).querySelectorAll('[data-s]').forEach(b => b.onclick = () => { $('#h-title', sh).value = b.dataset.s; });
+      $('#h-sugg', sh).innerHTML = sugg.map(x => `<button class="chip" data-s="${esc(x)}">${esc(x)}</button>`).join('');
+      $('#h-sugg', sh).querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+        $('#h-title', sh).value = b.dataset.s;
+        const last = S.health.find(x => x.kind === kind && x.title === b.dataset.s && repeatOf(x));
+        if (last && !r) setRepeat(repeatOf(last));
+      });
       $('#h-date-l', sh).textContent = k === 'vet' ? 'Visit / appointment date' : 'Date given';
       $('#h-title-l', sh).textContent = k === 'vet' ? 'Reason' : 'Name';
+      $('#h-rep-f', sh).hidden = k === 'vet';
+      if (k === 'vet' && repeat) setRepeat(0);
     };
-    sh.querySelectorAll('#h-cat .chip').forEach(b => b.onclick = () => setCat(b.dataset.c));
     sh.querySelectorAll('#h-kind button').forEach(b => b.onclick = e => { e.preventDefault(); setKind(b.dataset.k); });
-    sh.querySelectorAll('#h-quick .chip').forEach(b => b.onclick = () => { $('#h-next', sh).value = addMonths($('#h-date', sh).value || today(), Number(b.dataset.m)); });
-    setCat(catId); setKind(kind);
+    sh.querySelectorAll('#h-rep button').forEach(b => b.onclick = e => { e.preventDefault(); setRepeat(Number(b.dataset.n)); });
+    $('#h-date', sh).onchange = setNext;
+    drawCats(); setKind(kind); setRepeat(repeat, !r);
     $('#h-save', sh).onclick = e => busy(e.currentTarget, async () => {
-      const row = { cat_id: catId, kind, title: $('#h-title', sh).value.trim(), on_date: $('#h-date', sh).value, next_due: $('#h-next', sh).value || null, notes: $('#h-notes', sh).value.trim() || null };
-      if (!row.cat_id || !row.title || !row.on_date) { toast('Pick a cat, a name and a date'); return; }
-      const saved = r ? await update('health', r.id, row) : await insert('health', row);
-      healthViewSheet(saved.id, true);
+      const base = { kind, title: $('#h-title', sh).value.trim(), on_date: $('#h-date', sh).value, next_due: $('#h-next', sh).value || null,
+        notes: $('#h-notes', sh).value.trim() || null, repeat_months: kind === 'vet' ? null : (repeat || null) };
+      if (!cats.length || !base.title || !base.on_date) { toast('Pick at least one cat, a name and a date'); return; }
+      const saved = await saveHealthRows(cats.map(c => ({ ...base, cat_id: c })), r?.id);
+      healthViewSheet(saved.map(x => x.id), true);
     });
     const del = $('#h-del', sh);
     if (del) del.onclick = () => confirmSheet('Delete this record?', `${r.title} for ${cat(r.cat_id)?.name}`, 'Delete', () => remove('health', r.id));
   });
 }
-function healthViewSheet(id, justSaved) {
-  const r = byId(S.health, id); if (!r) return;
-  const c = cat(r.cat_id), K = HKIND[r.kind], u = healthCal(r), t = today();
-  const appt = r.kind === 'vet' && r.on_date >= t;
-  openSheet(`<h2>${K.ico} ${esc(r.title)}</h2><div class="sheet-sub">${esc(c?.name)} · ${K.one}${justSaved ? ' · saved ✓' : ''}</div>
+function healthViewSheet(ids, justSaved) {
+  ids = [].concat(ids);
+  const rs = ids.map(i => byId(S.health, i)).filter(Boolean); if (!rs.length) return;
+  const r = rs[0], K = HKIND[r.kind], t = today(), cal = healthCalGroup(rs);
+  const appt = r.kind === 'vet' && r.on_date >= t, rep = repeatOf(r);
+  const names = rs.length === S.cats.length && rs.length > 1 ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(', ');
+  // cats that got the same thing on the same day, for "Log next dose"
+  const together = S.health.filter(x => x.kind === r.kind && x.title === r.title && x.on_date === r.on_date && isLatestOfKind(x)).map(x => x.cat_id);
+  const nextCats = rs.length > 1 ? rs.map(x => x.cat_id) : (together.includes(r.cat_id) ? together : [r.cat_id]);
+  openSheet(`<h2>${K.ico} ${esc(r.title)}</h2><div class="sheet-sub">${esc(names)} · ${K.one}${justSaved ? ' · saved ✓' : ''}</div>
     <div class="card"><dl class="kv"><dt>${appt ? 'Appointment' : r.kind === 'vet' ? 'Visit' : 'Given'}</dt><dd>${esc(fmtDate(r.on_date))}</dd>
+      ${rep ? `<dt>Repeats</dt><dd>${esc(repeatText(rep))}</dd>` : ''}
       ${r.next_due ? `<dt>Next due</dt><dd>${esc(fmtDate(r.next_due))} ${isLatestOfKind(r) ? dueBadge(diffDays(t, r.next_due)) : ''}</dd>` : ''}
       ${r.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(r.notes)}</dd>` : ''}</dl></div>
-    ${u ? `<a class="btn cal full" href="${esc(u)}" target="_blank" rel="noopener">📅 Add ${appt ? 'appointment' : 'reminder'} to family calendar</a>
-      <div class="muted small" style="text-align:center;margin:6px 0 0;font-weight:600">Opens Google Calendar: pick the family calendar, then Save</div>` : ''}
-    <div class="btn-row"><button class="btn soft" data-act="close">Done</button><button class="btn soft" id="hv-edit">Edit</button>
-      ${!appt && r.next_due ? `<button class="btn soft" id="hv-again">Log next dose</button>` : ''}</div>`,
+    ${cal ? `<a class="btn cal full" href="${esc(cal.url)}" target="_blank" rel="noopener">📅 Add ${appt ? 'appointment' : cal.rep ? 'repeating reminder' : 'reminder'} to family calendar</a>
+      <div class="muted small" style="text-align:center;margin:6px 0 0;font-weight:600">${cal.rep ? `Repeats ${esc(repeatText(cal.rep))} in the calendar, so you only need to add it once. ` : ''}Pick the family calendar, then Save</div>` : ''}
+    <div class="btn-row"><button class="btn soft" data-act="close">Done</button>${rs.length === 1 ? `<button class="btn soft" id="hv-edit">Edit</button>` : ''}
+      ${!appt && (r.next_due || rep) ? `<button class="btn soft" id="hv-again">Log next dose</button>` : ''}</div>`,
   sh => {
-    $('#hv-edit', sh).onclick = () => healthSheet(r.id);
+    const ed = $('#hv-edit', sh); if (ed) ed.onclick = () => healthSheet(r.id);
     const again = $('#hv-again', sh);
-    if (again) again.onclick = () => {
-      healthSheet(null, r.cat_id);
-      const s2 = $('#sheet');
-      s2.querySelector(`#h-kind [data-k="${r.kind}"]`)?.click();
-      $('#h-title', s2).value = r.title;
-      if (r.next_due && r.on_date) { const months = Math.round(diffDays(r.on_date, r.next_due) / 30.44); if (months > 0) $('#h-next', s2).value = addMonths(today(), months); }
-    };
+    if (again) again.onclick = () => healthSheet(null, { cats: nextCats, kind: r.kind, title: r.title, repeat: rep, date: today() });
   });
 }
 function catSheet(id) {
