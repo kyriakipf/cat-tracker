@@ -327,7 +327,9 @@ function todayView() {
   const mine = alerts.filter(a => a.r.cat_id === sel);
   if (mine.length) {
     const a = mine[0], bad = !a.appt && a.diff <= 0;
-    html += `<button class="alert-strip ${bad ? 'bad' : ''}" data-act="tab" data-tab="health">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</span>${dueBadge(a.diff, a.appt)}${mine.length > 1 ? `<span class="more">+${mine.length - 1}</span>` : ''}</button>`;
+    html += `<div class="alert-strip ${bad ? 'bad' : ''}"><button class="as-main" data-act="health-view" data-id="${a.r.id}">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</span>${dueBadge(a.diff, a.appt)}</button>
+      ${a.appt ? `<button class="mini-btn dark" data-act="vet-done" data-id="${a.r.id}">✓ Done</button>` : `<button class="mini-btn dark" data-act="health-given" data-id="${a.r.id}">✓ Given</button>`}
+      ${mine.length > 1 ? `<button class="more" data-act="tab" data-tab="health">+${mine.length - 1}</button>` : ''}</div>`;
   }
   html += `<div id="today-swipe">${catCard(cat(sel))}</div>`;
   return html;
@@ -374,34 +376,54 @@ function catCard(c) {
 }
 
 /* Health */
+const HTABS = [['upcoming', '📅', 'Upcoming'], ['vaccine', '💉', 'Vaccines'], ['antiparasitic', '🐛', 'Parasites'], ['vet', '🩺', 'Vet']];
+const groupKey = r => [r.kind, r.title.trim().toLowerCase(), r.on_date, r.appt_time || '', r.next_due || '', r.done_at ? 1 : 0].join('|');
+function groupRows(list, keyOf = groupKey) {
+  const m = new Map();
+  list.forEach(x => { const k = keyOf(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); });
+  return [...m.values()];
+}
+const groupNames = rs => rs.length > 1 && rs.length === S.cats.length ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(' & ');
+const groupIcon = (rs, ico) => rs.length > 1 ? `<div class="r-ico">🐾</div>` : S.healthCat === 'all' ? avatar(cat(rs[0].cat_id), 'sm') : `<div class="r-ico">${ico}</div>`;
+const sameVisitIds = r => S.health.filter(x => x.kind === 'vet' && x.title === r.title && x.on_date === r.on_date && (x.appt_time || '') === (r.appt_time || '')).map(x => x.id);
+function sameGroupCats(r) {
+  const together = S.health.filter(x => x.kind === r.kind && x.title === r.title && x.on_date === r.on_date && isLatestOfKind(x)).map(x => x.cat_id);
+  return together.includes(r.cat_id) ? together : [r.cat_id];
+}
 function healthView() {
-  const f = S.healthCat;
+  const f = S.healthCat, tab = S.healthTab || 'upcoming', t = today();
   let html = `<div class="top"><div><h1>Health</h1><div class="sub">Vaccines, antiparasitics & vet</div></div></div>`;
   html += catFilter('health-cat', f);
-  const alerts = healthAlerts(30).filter(a => f === 'all' || a.r.cat_id === f);
-  if (alerts.length) {
-    html += `<div class="section-lbl">Coming up (30 days)</div><div class="card">` + alerts.map(a => {
-      const u = healthCal(a.r);
-      return `<div class="row">${avatar(cat(a.r.cat_id), 'sm')}<div class="grow" data-act="health-view" data-id="${a.r.id}"><div class="r-t">${esc(a.r.title)}</div>
-        <div class="r-s">${esc(cat(a.r.cat_id)?.name)} · ${a.appt ? 'Appointment' : 'Due'} ${esc(fmtDate(a.date, false))}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</div></div>
-        ${dueBadge(a.diff, a.appt)}${u ? `<a class="icon-btn" href="${esc(u)}" target="_blank" rel="noopener" aria-label="Add to calendar">📅</a>` : ''}</div>`;
-    }).join('') + `</div>`;
-  }
-  Object.entries(HKIND).forEach(([k, K]) => {
-    const recs = S.health.filter(r => r.kind === k && (f === 'all' || r.cat_id === f));
-    html += `<div class="section-lbl">${K.ico} ${K.t}</div><div class="card">`;
-    if (!recs.length) html += `<div class="empty small">Nothing logged yet</div>`;
-    recs.forEach(r => {
-      const t = today(), future = r.on_date > t;
-      let badge = '';
-      if (k === 'vet' && r.done_at && r.on_date >= t) badge = `<span class="badge ok">✓ Done</span>`;
-      else if (isAppt(r)) badge = dueBadge(diffDays(t, r.on_date), true);
-      else if (r.next_due && isLatestOfKind(r)) badge = dueBadge(diffDays(t, r.next_due));
-      html += `<div class="row" data-act="health-view" data-id="${r.id}">${f === 'all' ? avatar(cat(r.cat_id), 'sm') : `<div class="r-ico">${K.ico}</div>`}
-        <div class="grow"><div class="r-t">${esc(r.title)}</div><div class="r-s">${f === 'all' ? esc(cat(r.cat_id)?.name) + ' · ' : ''}${future && !r.done_at ? 'Booked' : k === 'vet' ? 'Visit' : 'Given'} ${esc(fmtDate(r.on_date))}${k === 'vet' && r.appt_time ? ` · ${esc(r.appt_time)}` : ''}</div></div>${badge}</div>`;
+  html += `<div class="seg htabs">` + HTABS.map(([k, i, l]) => `<button class="${tab === k ? 'sel' : ''}" data-act="health-tab" data-k="${k}"><span>${i}</span>${l}</button>`).join('') + `</div>`;
+  const ids = rs => rs.map(x => x.id).join(',');
+  if (tab === 'upcoming') {
+    const alerts = healthAlerts(30).filter(a => f === 'all' || a.r.cat_id === f);
+    const groups = groupRows(alerts, a => groupKey(a.r));
+    html += `<div class="card">`;
+    if (!groups.length) html += `<div class="empty">Nothing due in the next 30 days 🎉</div>`;
+    groups.forEach(g => {
+      const a = g[0], rs = g.map(x => x.r), cal = healthCalGroup(rs);
+      html += `<div class="row">${groupIcon(rs, HKIND[a.r.kind].ico)}<div class="grow" data-act="health-view" data-id="${ids(rs)}"><div class="r-t">${esc(a.r.title)}</div>
+        <div class="r-s">${esc(groupNames(rs))} · ${a.appt ? '' : 'Due '}${esc(fmtDate(a.date, false))}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</div></div>
+        ${dueBadge(a.diff, a.appt)}${a.appt ? `<button class="mini-btn" data-act="vet-done" data-id="${a.r.id}">✓ Done</button>` : cal ? `<a class="icon-btn" href="${esc(cal.url)}" target="_blank" rel="noopener" aria-label="Add to calendar">📅</a>` : ''}</div>`;
     });
     html += `</div>`;
-  });
+  } else {
+    const K = HKIND[tab];
+    const groups = groupRows(S.health.filter(r => r.kind === tab && (f === 'all' || r.cat_id === f)));
+    html += `<div class="card">`;
+    if (!groups.length) html += `<div class="empty">No ${esc(K.t.toLowerCase())} logged yet</div>`;
+    groups.forEach(rs => {
+      const r = rs[0], future = r.on_date > t;
+      let badge = '', btn = '';
+      if (tab === 'vet' && r.done_at && r.on_date >= t) badge = `<span class="badge ok">✓ Done</span>`;
+      else if (isAppt(r)) { badge = dueBadge(diffDays(t, r.on_date), true); btn = `<button class="mini-btn" data-act="vet-done" data-id="${r.id}">✓ Done</button>`; }
+      else if (r.next_due && rs.some(isLatestOfKind)) badge = dueBadge(diffDays(t, r.next_due));
+      html += `<div class="row">${groupIcon(rs, K.ico)}<div class="grow" data-act="health-view" data-id="${ids(rs)}"><div class="r-t">${esc(r.title)}</div>
+        <div class="r-s">${f === 'all' ? esc(groupNames(rs)) + ' · ' : ''}${future && !r.done_at ? '' : tab === 'vet' ? 'Visit ' : 'Given '}${esc(fmtDate(r.on_date))}${tab === 'vet' && r.appt_time ? ` · ${esc(r.appt_time)}` : ''}${repeatOf(r) ? ` · ${esc(repeatText(repeatOf(r)))}` : ''}</div></div>${badge}${btn}</div>`;
+    });
+    html += `</div>`;
+  }
   html += `<button class="fab" data-act="health-add" aria-label="Add">＋</button>`;
   return html;
 }
@@ -925,8 +947,7 @@ function healthViewSheet(ids, justSaved) {
   const appt = isAppt(r), rep = repeatOf(r);
   const names = rs.length === S.cats.length && rs.length > 1 ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(', ');
   // cats that got the same thing on the same day, for "Log next dose"
-  const together = S.health.filter(x => x.kind === r.kind && x.title === r.title && x.on_date === r.on_date && isLatestOfKind(x)).map(x => x.cat_id);
-  const nextCats = rs.length > 1 ? rs.map(x => x.cat_id) : (together.includes(r.cat_id) ? together : [r.cat_id]);
+  const nextCats = rs.length > 1 ? rs.map(x => x.cat_id) : sameGroupCats(r);
   openSheet(`<h2>${K.ico} ${esc(r.title)}</h2><div class="sheet-sub">${esc(names)} · ${K.one}${justSaved ? ' · saved ✓' : ''}</div>
     <div class="card"><dl class="kv"><dt>${appt ? 'Appointment' : r.kind === 'vet' ? 'Visit' : 'Given'}</dt><dd>${esc(fmtDate(r.on_date))}${r.kind === 'vet' && r.appt_time ? ` at ${esc(r.appt_time)}` : ''}</dd>
       ${rep ? `<dt>Repeats</dt><dd>${esc(repeatText(rep))}</dd>` : ''}
@@ -940,7 +961,7 @@ function healthViewSheet(ids, justSaved) {
       ${!appt && (r.next_due || rep) ? `<button class="btn soft" id="hv-again">Log next dose</button>` : ''}</div>`,
   sh => {
     const ed = $('#hv-edit', sh); if (ed) ed.onclick = () => healthSheet(r.id);
-    const visitIds = r.kind === 'vet' ? [...new Set([...rs.map(x => x.id), ...S.health.filter(x => x.kind === 'vet' && x.title === r.title && x.on_date === r.on_date).map(x => x.id)])] : [];
+    const visitIds = r.kind === 'vet' ? [...new Set([...rs.map(x => x.id), ...sameVisitIds(r)])] : [];
     const dn = $('#hv-done', sh);
     if (dn) dn.onclick = () => busy(dn, async () => {
       if (await setVetDone(visitIds, new Date().toISOString())) {
@@ -1059,7 +1080,12 @@ const ACT = {
   'cat-history': d => { S.tab = 'history'; S.histCat = d.cat; S.histKind = 'all'; S.catId = null; render(); window.scrollTo(0, 0); },
   'health-cat': d => { S.healthCat = d.cat; render(); },
   'health-add': () => healthSheet(null),
-  'health-view': d => healthViewSheet(d.id),
+  'health-view': d => healthViewSheet(d.id.split(',')),
+  'health-tab': d => { S.healthTab = d.k; render(); window.scrollTo(0, 0); },
+  'vet-done': (d, el) => { const r = byId(S.health, d.id); if (!r) return; busy(el, async () => {
+    if (await setVetDone(sameVisitIds(r), new Date().toISOString())) toast(`✓ ${r.title} done`, [{ t: 'Add notes', fn: () => healthSheet(r.id) }]); }); },
+  'health-given': d => { const r = byId(S.health, d.id); if (!r) return;
+    healthSheet(null, { cats: sameGroupCats(r), kind: r.kind, title: r.title, repeat: repeatOf(r), date: today() }); },
   'hist-cat': d => { S.histCat = d.cat; S.histLimit = 150; render(); },
   'hist-kind': d => { S.histKind = d.k; S.histLimit = 150; render(); },
   'hist-more': () => { S.histLimit += 150; render(); },

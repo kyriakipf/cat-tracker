@@ -206,3 +206,14 @@ textarea.inp { min-height: 80px; resize: vertical; }
 #today-swipe .cat-food { font-size: 14px; }
 #today-swipe .progress { margin-top: 8px; }
 #today-swipe .chip { padding: 10px 13px; }
+
+/* Health tabs, quick done buttons */
+.htabs { margin-bottom: 12px; }
+.htabs button { display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 12px; padding: 7px 2px; }
+.htabs button span { font-size: 17px; }
+.mini-btn { flex: none; padding: 7px 10px; border-radius: 11px; font-weight: 800; font-size: 13px; background: var(--card); border: 1.5px solid #E2D5CA; white-space: nowrap; }
+.mini-btn.dark { background: var(--ink); color: #fff; border-color: var(--ink); }
+.alert-strip { padding: 5px 5px 5px 12px; }
+.alert-strip .as-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; font-weight: 700; font-size: 14px; padding: 3px 0; }
+.alert-strip .as-main .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-strip .more { padding: 4px 6px; }
