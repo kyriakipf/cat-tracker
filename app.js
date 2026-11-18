@@ -196,6 +196,7 @@ function medDoses(catId, day = today()) {
   return out;
 }
 
+const isAppt = r => r.kind === 'vet' && r.on_date >= today() && !r.done_at;
 function healthAlerts(withinDays = 14) {
   const t = today(), latest = {};
   S.health.forEach(r => {
@@ -204,11 +205,11 @@ function healthAlerts(withinDays = 14) {
   });
   const out = [];
   Object.values(latest).forEach(r => {
-    if (r.kind === 'vet' && r.on_date >= t) out.push({ r, date: r.on_date, diff: diffDays(t, r.on_date), appt: true });
+    if (isAppt(r)) out.push({ r, date: r.on_date, diff: diffDays(t, r.on_date), appt: true });
     else if (r.next_due) out.push({ r, date: r.next_due, diff: diffDays(t, r.next_due) });
   });
   S.health.forEach(r => { // other future vet appointments that aren't the latest of their kind
-    if (r.kind === 'vet' && r.on_date >= t && !out.some(o => o.r.id === r.id)) out.push({ r, date: r.on_date, diff: diffDays(t, r.on_date), appt: true });
+    if (isAppt(r) && !out.some(o => o.r.id === r.id)) out.push({ r, date: r.on_date, diff: diffDays(t, r.on_date), appt: true });
   });
   return out.filter(a => a.diff <= withinDays).sort((a, b) => a.diff - b.diff);
 }
@@ -326,7 +327,7 @@ function todayView() {
   const mine = alerts.filter(a => a.r.cat_id === sel);
   if (mine.length) {
     const a = mine[0], bad = !a.appt && a.diff <= 0;
-    html += `<button class="alert-strip ${bad ? 'bad' : ''}" data-act="tab" data-tab="health">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}</span>${dueBadge(a.diff, a.appt)}${mine.length > 1 ? `<span class="more">+${mine.length - 1}</span>` : ''}</button>`;
+    html += `<button class="alert-strip ${bad ? 'bad' : ''}" data-act="tab" data-tab="health">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</span>${dueBadge(a.diff, a.appt)}${mine.length > 1 ? `<span class="more">+${mine.length - 1}</span>` : ''}</button>`;
   }
   html += `<div id="today-swipe">${catCard(cat(sel))}</div>`;
   return html;
@@ -382,7 +383,7 @@ function healthView() {
     html += `<div class="section-lbl">Coming up (30 days)</div><div class="card">` + alerts.map(a => {
       const u = healthCal(a.r);
       return `<div class="row">${avatar(cat(a.r.cat_id), 'sm')}<div class="grow" data-act="health-view" data-id="${a.r.id}"><div class="r-t">${esc(a.r.title)}</div>
-        <div class="r-s">${esc(cat(a.r.cat_id)?.name)} · ${a.appt ? 'Appointment' : 'Due'} ${esc(fmtDate(a.date, false))}</div></div>
+        <div class="r-s">${esc(cat(a.r.cat_id)?.name)} · ${a.appt ? 'Appointment' : 'Due'} ${esc(fmtDate(a.date, false))}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</div></div>
         ${dueBadge(a.diff, a.appt)}${u ? `<a class="icon-btn" href="${esc(u)}" target="_blank" rel="noopener" aria-label="Add to calendar">📅</a>` : ''}</div>`;
     }).join('') + `</div>`;
   }
@@ -393,10 +394,11 @@ function healthView() {
     recs.forEach(r => {
       const t = today(), future = r.on_date > t;
       let badge = '';
-      if (k === 'vet' && r.on_date >= t) badge = dueBadge(diffDays(t, r.on_date), true);
+      if (k === 'vet' && r.done_at && r.on_date >= t) badge = `<span class="badge ok">✓ Done</span>`;
+      else if (isAppt(r)) badge = dueBadge(diffDays(t, r.on_date), true);
       else if (r.next_due && isLatestOfKind(r)) badge = dueBadge(diffDays(t, r.next_due));
       html += `<div class="row" data-act="health-view" data-id="${r.id}">${f === 'all' ? avatar(cat(r.cat_id), 'sm') : `<div class="r-ico">${K.ico}</div>`}
-        <div class="grow"><div class="r-t">${esc(r.title)}</div><div class="r-s">${f === 'all' ? esc(cat(r.cat_id)?.name) + ' · ' : ''}${future ? 'Booked' : k === 'vet' ? 'Visit' : 'Given'} ${esc(fmtDate(r.on_date))}</div></div>${badge}</div>`;
+        <div class="grow"><div class="r-t">${esc(r.title)}</div><div class="r-s">${f === 'all' ? esc(cat(r.cat_id)?.name) + ' · ' : ''}${future && !r.done_at ? 'Booked' : k === 'vet' ? 'Visit' : 'Given'} ${esc(fmtDate(r.on_date))}${k === 'vet' && r.appt_time ? ` · ${esc(r.appt_time)}` : ''}</div></div>${badge}</div>`;
     });
     html += `</div>`;
   });
@@ -814,9 +816,9 @@ const repeatText = n => !n ? '' : n === 1 ? 'every month' : n === 12 ? 'every ye
 async function saveHealthRows(rows, id) {
   const go = rs => id ? sb.from('health').update(rs[0]).eq('id', id).select() : sb.from('health').insert(rs).select();
   let { data, error } = await go(rows);
-  if (error && /repeat_months/.test(error.message || '')) { // database not updated yet: save without it
-    ({ data, error } = await go(rows.map(({ repeat_months, ...x }) => x)));
-    if (!error) toast('Saved — run the small database update to remember the repeat');
+  if (error && /repeat_months|appt_time/.test(error.message || '')) { // database not updated yet: save without new fields
+    ({ data, error } = await go(rows.map(({ repeat_months, appt_time, ...x }) => x)));
+    if (!error) toast('Saved — but run the small database update to keep the repeat/time', [], 7000);
   }
   if (error) { toast('⚠️ ' + error.message); throw error; }
   const ids = data.map(x => x.id);
@@ -824,13 +826,18 @@ async function saveHealthRows(rows, id) {
   return data;
 }
 function healthCalGroup(rs) {
-  const r = rs[0], t = today(), appt = r.kind === 'vet' && r.on_date >= t;
+  const r = rs[0], t = today(), appt = isAppt(r);
   const day = appt ? r.on_date : r.next_due;
   if (!day) return null;
   const names = rs.length === S.cats.length && rs.length > 1 ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(' & ');
   const title = appt ? `🐱 ${names} – vet: ${r.title}` : `🐱 ${names} – ${r.title} due`;
   const rep = appt ? 0 : repeatOf(r);
   let u = calUrl(title, day, `${HKIND[r.kind].one} for ${names}${rep ? ` (${repeatText(rep)})` : ''}${r.notes ? '\n' + r.notes : ''}\n(from Cat Tracker)`);
+  if (appt && r.appt_time && /^\d{2}:\d{2}$/.test(r.appt_time)) {
+    const [h, m] = r.appt_time.split(':').map(Number), d0 = day.replaceAll('-', '');
+    const end = Math.min(h * 60 + m + 60, 23 * 60 + 59);
+    u = u.replace(/dates=[^&]+/, `dates=${d0}T${pad(h)}${pad(m)}00/${d0}T${pad(Math.floor(end / 60))}${pad(end % 60)}00&ctz=Europe/Athens`);
+  }
   if (rep) u += `&recur=${encodeURIComponent(`RRULE:FREQ=MONTHLY;INTERVAL=${rep}`)}`;
   return { url: u, rep };
 }
@@ -846,7 +853,8 @@ function healthSheet(id, opts = {}) {
     <div class="seg" id="h-kind">${Object.entries(HKIND).map(([k, K]) => `<button data-k="${k}">${K.ico} ${K.one}</button>`).join('')}</div>
     <label class="f"><span id="h-title-l">Name</span><input class="inp" id="h-title" value="${esc(r?.title || opts.title || '')}"></label>
     <div class="chips" id="h-sugg"></div>
-    <label class="f"><span id="h-date-l">Date</span><input class="inp" type="date" id="h-date" value="${esc(startDate)}"></label>
+    <div class="two" id="h-dt"><label class="f"><span id="h-date-l">Date</span><input class="inp" type="date" id="h-date" value="${esc(startDate)}"></label>
+    <label class="f" id="h-time-f"><span>Time</span><input class="inp" type="time" id="h-time" value="${esc(r?.appt_time || '')}"></label></div>
     <label class="f" id="h-rep-f"><span>Repeats</span><div class="seg" id="h-rep">${REPEATS.map(([n, t]) => `<button data-n="${n}">${t}</button>`).join('')}</div></label>
     <label class="f"><span>Next due</span><input class="inp" type="date" id="h-next" value="${esc(r?.next_due || '')}"></label>
     <label class="f"><span>Notes</span><textarea class="inp" id="h-notes" placeholder="product, vet's advice, batch number…">${esc(r?.notes || '')}</textarea></label>
@@ -878,7 +886,8 @@ function healthSheet(id, opts = {}) {
         const last = S.health.find(x => x.kind === kind && x.title === b.dataset.s && repeatOf(x));
         if (last && !r) setRepeat(repeatOf(last));
       });
-      $('#h-date-l', sh).textContent = k === 'vet' ? 'Visit / appointment date' : 'Date given';
+      $('#h-date-l', sh).textContent = k === 'vet' ? 'Appointment date' : 'Date given';
+      $('#h-time-f', sh).hidden = k !== 'vet'; $('#h-dt', sh).classList.toggle('two', k === 'vet');
       $('#h-title-l', sh).textContent = k === 'vet' ? 'Reason' : 'Name';
       $('#h-rep-f', sh).hidden = k === 'vet';
       if (k === 'vet' && repeat) setRepeat(0);
@@ -890,6 +899,7 @@ function healthSheet(id, opts = {}) {
     $('#h-save', sh).onclick = e => busy(e.currentTarget, async () => {
       const base = { kind, title: $('#h-title', sh).value.trim(), on_date: $('#h-date', sh).value, next_due: $('#h-next', sh).value || null,
         notes: $('#h-notes', sh).value.trim() || null, repeat_months: kind === 'vet' ? null : (repeat || null) };
+      if (kind === 'vet' && $('#h-time', sh).value) base.appt_time = $('#h-time', sh).value; else if (r?.appt_time) base.appt_time = null;
       if (!cats.length || !base.title || !base.on_date) { toast('Pick at least one cat, a name and a date'); return; }
       const saved = await saveHealthRows(cats.map(c => ({ ...base, cat_id: c })), r?.id);
       healthViewSheet(saved.map(x => x.id), true);
@@ -898,26 +908,48 @@ function healthSheet(id, opts = {}) {
     if (del) del.onclick = () => confirmSheet('Delete this record?', `${r.title} for ${cat(r.cat_id)?.name}`, 'Delete', () => remove('health', r.id));
   });
 }
+async function setVetDone(ids, when) {
+  const { data, error } = await sb.from('health').update({ done_at: when }).in('id', ids).select();
+  if (error) {
+    toast(/done_at/.test(error.message || '') ? '⚠️ Run the small database update first (see Claude\'s message)' : '⚠️ ' + error.message, [], 7000);
+    return false;
+  }
+  const got = data.map(x => x.id);
+  S.health = S.health.filter(x => !got.includes(x.id)).concat(data); sortTable('health'); render();
+  return true;
+}
 function healthViewSheet(ids, justSaved) {
   ids = [].concat(ids);
   const rs = ids.map(i => byId(S.health, i)).filter(Boolean); if (!rs.length) return;
   const r = rs[0], K = HKIND[r.kind], t = today(), cal = healthCalGroup(rs);
-  const appt = r.kind === 'vet' && r.on_date >= t, rep = repeatOf(r);
+  const appt = isAppt(r), rep = repeatOf(r);
   const names = rs.length === S.cats.length && rs.length > 1 ? 'All cats' : rs.map(x => cat(x.cat_id)?.name).join(', ');
   // cats that got the same thing on the same day, for "Log next dose"
   const together = S.health.filter(x => x.kind === r.kind && x.title === r.title && x.on_date === r.on_date && isLatestOfKind(x)).map(x => x.cat_id);
   const nextCats = rs.length > 1 ? rs.map(x => x.cat_id) : (together.includes(r.cat_id) ? together : [r.cat_id]);
   openSheet(`<h2>${K.ico} ${esc(r.title)}</h2><div class="sheet-sub">${esc(names)} · ${K.one}${justSaved ? ' · saved ✓' : ''}</div>
-    <div class="card"><dl class="kv"><dt>${appt ? 'Appointment' : r.kind === 'vet' ? 'Visit' : 'Given'}</dt><dd>${esc(fmtDate(r.on_date))}</dd>
+    <div class="card"><dl class="kv"><dt>${appt ? 'Appointment' : r.kind === 'vet' ? 'Visit' : 'Given'}</dt><dd>${esc(fmtDate(r.on_date))}${r.kind === 'vet' && r.appt_time ? ` at ${esc(r.appt_time)}` : ''}</dd>
       ${rep ? `<dt>Repeats</dt><dd>${esc(repeatText(rep))}</dd>` : ''}
       ${r.next_due ? `<dt>Next due</dt><dd>${esc(fmtDate(r.next_due))} ${isLatestOfKind(r) ? dueBadge(diffDays(t, r.next_due)) : ''}</dd>` : ''}
       ${r.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(r.notes)}</dd>` : ''}</dl></div>
     ${cal ? `<a class="btn cal full" href="${esc(cal.url)}" target="_blank" rel="noopener">📅 Add ${appt ? 'appointment' : cal.rep ? 'repeating reminder' : 'reminder'} to family calendar</a>
       <div class="muted small" style="text-align:center;margin:6px 0 0;font-weight:600">${cal.rep ? `Repeats ${esc(repeatText(cal.rep))} in the calendar, so you only need to add it once. ` : ''}Pick the family calendar, then Save</div>` : ''}
-    <div class="btn-row"><button class="btn soft" data-act="close">Done</button>${rs.length === 1 ? `<button class="btn soft" id="hv-edit">Edit</button>` : ''}
+    ${appt ? `<button class="btn full" id="hv-done" style="margin-top:10px">✓ Mark visit as done</button>` : ''}
+    ${r.kind === 'vet' && r.done_at ? `<div class="muted small" style="text-align:center;margin-top:10px;font-weight:700">✓ Marked done ${esc(fmtDayLabel(evDay(r.done_at)).toLowerCase())} at ${esc(fmtTime(r.done_at))} · <button class="link" id="hv-undone">Undo</button></div>` : ''}
+    <div class="btn-row"><button class="btn soft" data-act="close">Close</button>${rs.length === 1 ? `<button class="btn soft" id="hv-edit">Edit</button>` : ''}
       ${!appt && (r.next_due || rep) ? `<button class="btn soft" id="hv-again">Log next dose</button>` : ''}</div>`,
   sh => {
     const ed = $('#hv-edit', sh); if (ed) ed.onclick = () => healthSheet(r.id);
+    const visitIds = r.kind === 'vet' ? [...new Set([...rs.map(x => x.id), ...S.health.filter(x => x.kind === 'vet' && x.title === r.title && x.on_date === r.on_date).map(x => x.id)])] : [];
+    const dn = $('#hv-done', sh);
+    if (dn) dn.onclick = () => busy(dn, async () => {
+      if (await setVetDone(visitIds, new Date().toISOString())) {
+        closeSheet();
+        toast(`✓ ${r.title} done`, [{ t: 'Add notes', fn: () => healthSheet(r.id) }]);
+      }
+    });
+    const ud = $('#hv-undone', sh);
+    if (ud) ud.onclick = () => busy(ud, async () => { if (await setVetDone(visitIds, null)) healthViewSheet(ids); });
     const again = $('#hv-again', sh);
     if (again) again.onclick = () => healthSheet(null, { cats: nextCats, kind: r.kind, title: r.title, repeat: rep, date: today() });
   });
