@@ -15,7 +15,7 @@ const S = {
   cats: [], diets: [], meals: [], counters: [], events: [], meds: [], health: [],
   catId: null, histCat: 'all', histKind: 'all', histLimit: 150, healthCat: 'all',
 };
-const APP_VERSION = '2026-11-18.6';
+const APP_VERSION = '2026-11-19.1';
 const VIEW_KEYS = ['tab', 'catId', 'healthTab', 'healthCat', 'histCat', 'histKind'];
 try { Object.assign(S, Object.fromEntries(Object.entries(JSON.parse(localStorage.getItem('view') || '{}')).filter(([k]) => VIEW_KEYS.includes(k)))); } catch (e) {}
 if (!['today', 'health', 'history', 'cats'].includes(S.tab)) S.tab = 'today';
@@ -325,6 +325,12 @@ function mountLogin() {
 }
 
 /* Today */
+const viewDay = () => (S.viewDay && S.viewDay < today()) ? S.viewDay : today();
+const onToday = () => viewDay() === today();
+function logAt() { // time for quick logs: now, or the same clock time on the day being viewed
+  if (onToday()) return new Date().toISOString();
+  const d = parseDay(viewDay()), n = new Date(); d.setHours(n.getHours(), n.getMinutes(), 0, 0); return d.toISOString();
+}
 function todayView() {
   const d = new Date();
   if (!S.cats.length) return `<div class="top"><h1>Today</h1></div><div class="card empty">No cats yet. Add them in the Cats tab.</div>`;
@@ -335,42 +341,47 @@ function todayView() {
   const alerts = healthAlerts(14);
   const needs = id => alerts.some(a => a.r.cat_id === id && (a.appt ? a.diff <= 1 : a.diff <= 7)) ||
     SLOTS.some(s => slotState(id, s).cls === 'due') || medDoses(id).some(x => !x.asNeeded && !x.ev);
-  let html = `<div class="today-top"><h1>Today</h1><span class="sub">${esc(d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }))}</span></div>`;
+  const vd = viewDay(), isT = vd === today();
+  const title = isT ? 'Today' : vd === addDays(today(), -1) ? 'Yesterday' : parseDay(vd).toLocaleDateString('en-GB', { weekday: 'long' });
+  let html = `<div class="today-top"><button class="day-nav" data-act="day-prev" aria-label="Previous day">‹</button>
+    <div class="grow"><h1>${esc(title)}</h1><span class="sub">${esc(parseDay(vd).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }))}</span></div>
+    ${isT ? `<button class="day-nav" disabled aria-label="Next day">›</button>` : `<button class="mini-btn" data-act="day-today">Today</button><button class="day-nav" data-act="day-next" aria-label="Next day">›</button>`}</div>`;
   if (isDemo()) html += `<div class="demo-bar">🧪 Demo mode: sample cats, changes stay on this phone and reset daily</div>`;
   html += `<div class="cat-tabs">` + S.cats.map(c => `<button class="cat-tab ${c.id === sel ? 'sel' : ''}" style="--c:${esc(c.color)}" data-act="today-cat" data-cat="${c.id}">
-    ${avatar(c, 'sm')}<span>${esc(c.name)}</span>${needs(c.id) ? '<i class="dot"></i>' : ''}</button>`).join('') + `</div>`;
-  const mine = alerts.filter(a => a.r.cat_id === sel);
+    ${avatar(c, 'sm')}<span>${esc(c.name)}</span>${isT && needs(c.id) ? '<i class="dot"></i>' : ''}</button>`).join('') + `</div>`;
+  const mine = isT ? alerts.filter(a => a.r.cat_id === sel) : [];
   if (mine.length) {
     const a = mine[0], bad = !a.appt && a.diff <= 0;
     html += `<div class="alert-strip ${bad ? 'bad' : ''}"><button class="as-main" data-act="health-view" data-id="${a.r.id}">${HKIND[a.r.kind].ico} <span class="grow">${esc(a.r.title)}${a.appt && a.r.appt_time ? ` · ${esc(a.r.appt_time)}` : ''}</span>${dueBadge(a.diff, a.appt)}</button>
       ${a.appt ? `<button class="mini-btn dark" data-act="vet-done" data-id="${a.r.id}">✓ Done</button>` : `<button class="mini-btn dark" data-act="health-given" data-id="${a.r.id}">✓ Given</button>`}
       ${mine.length > 1 ? `<button class="more" data-act="tab" data-tab="health">+${mine.length - 1}</button>` : ''}</div>`;
   }
-  html += `<div id="today-swipe">${catCard(cat(sel))}</div>`;
+  html += `<div id="today-swipe" class="${S.swipeAnim || ''}">${catCard(cat(sel))}</div>`;
+  S.swipeAnim = '';
   return html;
 }
 function catCard(c) {
-  const diet = currentDiet(c.id), t = today();
+  const diet = currentDiet(c.id), t = viewDay();
   const intake = dayIntake(c.id, t);
   const pct = intake.target ? Math.min(100, intake.eaten / intake.target * 100) : 0;
   const meals = SLOTS.map(s => {
-    const st = slotState(c.id, s);
+    const st = slotState(c.id, s, t);
     const label = st.m ? fmtTime(st.m.at) : (s.time || s.name);
     const val = st.m ? `${AMT[st.m.amount].short}${st.m.served_g != null ? ` · ${round(Number(st.m.served_g))}g` : ''}` : (st.cls === 'due' ? 'Due' : '—');
-    return `<button class="meal ${st.cls}" data-act="meal" data-cat="${c.id}" data-slot="${s.k}">
+    return `<button class="meal ${st.cls}" data-act="meal" data-cat="${c.id}" data-slot="${s.k}" data-day="${t}">
       <span class="m-ico">${st.m ? AMT[st.m.amount].ico : s.ico}</span><span class="m-t">${esc(label)}</span><span class="m-v">${esc(val)}</span></button>`;
   }).join('');
-  const doses = medDoses(c.id);
+  const doses = medDoses(c.id, t);
   const medChips = doses.map(d => {
     if (d.asNeeded) return `<button class="chip" data-act="med" data-med="${d.m.id}" data-key="now">💊 ${esc(d.m.name)}${d.count ? ` <span class="n">${d.count}</span>` : ' +'}</button>`;
     const when = d.key === 'day' ? '' : ` ${esc(d.key)}`;
     return `<button class="chip ${d.ev ? 'med-done' : 'med-due'}" data-act="med" data-med="${d.m.id}" data-key="${esc(d.key)}">💊 ${esc(d.m.name)}${when} ${d.ev ? '✓' : ''}</button>`;
   }).join('');
   const counters = S.counters.filter(k => k.cat_id === c.id).map(k => {
-    const n = evCount(c.id, e => e.kind === 'counter' && e.ref_id === k.id);
+    const n = evCount(c.id, e => e.kind === 'counter' && e.ref_id === k.id, t);
     return `<button class="chip counter" data-act="count" data-id="${k.id}">${esc(k.emoji || '⭐')} ${esc(k.label)}${n ? ` <span class="n">${n}</span>` : ''}</button>`;
   }).join('');
-  const nV = evCount(c.id, e => e.kind === 'vomit'), nL = evCount(c.id, e => e.kind === 'litter'), nB = evCount(c.id, e => e.kind === 'behavior');
+  const nV = evCount(c.id, e => e.kind === 'vomit', t), nL = evCount(c.id, e => e.kind === 'litter', t), nB = evCount(c.id, e => e.kind === 'behavior', t);
   const n = x => x ? ` <span class="n">${x}</span>` : '';
   return `<div class="card cat-card" style="--c:${esc(c.color)}">
     <div class="cat-head"><div class="grow">
@@ -670,7 +681,7 @@ function litterSheet(catId) {
     let label = null;
     sh.querySelectorAll('#lt [data-l]').forEach(b => b.onclick = () => { label = b.dataset.l; sh.querySelectorAll('#lt .big-opt').forEach(x => x.classList.toggle('sel', x === b)); $('#lt-save', sh).disabled = false; });
     $('#lt-save', sh).onclick = e => busy(e.currentTarget, async () => {
-      await logEvent({ cat_id: catId, kind: 'litter', label, note: $('#lt-note', sh).value.trim() || null }, `💩 ${c.name}: ${label}`);
+      await logEvent({ cat_id: catId, kind: 'litter', label, note: $('#lt-note', sh).value.trim() || null, at: logAt() }, `💩 ${c.name}: ${label}`);
       closeSheet();
     });
   });
@@ -680,7 +691,7 @@ function weightSheet(catId) {
   const last = S.events.find(e => e.cat_id === catId && e.kind === 'weight');
   openSheet(`<h2>⚖️ ${esc(c.name)} · Weight</h2><div class="sheet-sub">${last ? `Last: ${round(Number(last.value), 2)} kg on ${esc(fmtDate(evDay(last.at)))}` : 'First weigh-in'}</div>
     <div class="two"><label class="f"><span>Weight (kg)</span><input class="inp" id="w-val" inputmode="decimal" placeholder="4.25"></label>
-    <label class="f"><span>When</span><input class="inp" type="datetime-local" id="w-at" value="${esc(toLocalInput())}"></label></div>
+    <label class="f"><span>When</span><input class="inp" type="datetime-local" id="w-at" value="${esc(toLocalInput(logAt()))}"></label></div>
     <button class="btn full" id="w-save">Save</button>`,
   sh => {
     setTimeout(() => $('#w-val', sh).focus(), 150);
@@ -696,7 +707,7 @@ function behaviorSheet(catId) {
   const c = cat(catId);
   openSheet(`<h2>📝 ${esc(c.name)} · Behaviour</h2><div class="sheet-sub">Describe anything unusual</div>
     <label class="f"><span>What happened?</span><textarea class="inp" id="b-note" placeholder="e.g. hiding under the bed all afternoon"></textarea></label>
-    <label class="f"><span>When</span><input class="inp" type="datetime-local" id="b-at" value="${esc(toLocalInput())}"></label>
+    <label class="f"><span>When</span><input class="inp" type="datetime-local" id="b-at" value="${esc(toLocalInput(logAt()))}"></label>
     <label class="check"><input type="checkbox" id="b-keep"> Make this a one-tap quick button for ${esc(c.name)}</label>
     <div id="b-keep-f" hidden><div class="two"><label class="f"><span>Button name</span><input class="inp" id="b-label" maxlength="30"></label>
       <label class="f"><span>Emoji</span><input class="inp" id="b-emoji" value="⭐" maxlength="4"></label></div></div>
@@ -835,8 +846,8 @@ function medCalSheet(medId, justSaved) {
 async function medTap(medId, key) {
   const m = byId(S.meds, medId), c = cat(m.cat_id);
   const snapshot = `${m.name}${m.dose ? ` (${m.dose})` : ''}`;
-  if (key === 'now') { await logEvent({ cat_id: m.cat_id, kind: 'med_given', ref_id: m.id, label: 'now', note: snapshot }, `💊 ${c.name}: ${m.name} given`); return; }
-  const ev = S.events.find(e => e.kind === 'med_given' && e.ref_id === m.id && e.label === key && evDay(e.at) === today());
+  if (key === 'now') { await logEvent({ cat_id: m.cat_id, kind: 'med_given', ref_id: m.id, label: 'now', note: snapshot, at: logAt() }, `💊 ${c.name}: ${m.name} given`); return; }
+  const ev = S.events.find(e => e.kind === 'med_given' && e.ref_id === m.id && e.label === key && evDay(e.at) === viewDay());
   if (ev) {
     openSheet(`<h2>💊 ${esc(m.name)}${key !== 'day' ? ` · ${esc(key)}` : ''}</h2>
       <div class="sheet-sub">Given to ${esc(c.name)} by ${esc(whoName(ev.by_email))} at ${esc(fmtTime(ev.at))}</div>
@@ -844,7 +855,7 @@ async function medTap(medId, key) {
     sh => { $('#mt-undo', sh).onclick = e => busy(e.currentTarget, async () => { await remove('events', ev.id); closeSheet(); }); });
     return;
   }
-  const ev2 = await insert('events', { cat_id: m.cat_id, kind: 'med_given', ref_id: m.id, label: key, note: snapshot });
+  const ev2 = await insert('events', { cat_id: m.cat_id, kind: 'med_given', ref_id: m.id, label: key, note: snapshot, at: logAt() });
   toast(`💊 ${c.name}: ${m.name} ✓`, [{ t: 'Undo', fn: () => remove('events', ev2.id) }]);
 }
 const REPEATS = [[0, 'Once'], [1, 'Monthly'], [3, '3 months'], [6, '6 months'], [12, 'Yearly']];
@@ -1077,11 +1088,14 @@ const ACT = {
   close: () => closeSheet(),
   retry: () => loadAll(),
   meal: d => mealSheet(d.cat, d.slot, d.day || today()),
-  count: d => { const k = byId(S.counters, d.id); logEvent({ cat_id: k.cat_id, kind: 'counter', label: k.label, ref_id: k.id }, `${k.emoji || '⭐'} ${cat(k.cat_id).name}: ${k.label}`).catch(() => {}); },
-  vomit: d => logEvent({ cat_id: d.cat, kind: 'vomit' }, `🤮 ${cat(d.cat).name} puked — logged`).catch(() => {}),
+  count: d => { const k = byId(S.counters, d.id); logEvent({ cat_id: k.cat_id, kind: 'counter', label: k.label, ref_id: k.id, at: logAt() }, `${k.emoji || '⭐'} ${cat(k.cat_id).name}: ${k.label}`).catch(() => {}); },
+  vomit: d => logEvent({ cat_id: d.cat, kind: 'vomit', at: logAt() }, `🤮 ${cat(d.cat).name} puked — logged`).catch(() => {}),
   litter: d => litterSheet(d.cat),
   weight: d => weightSheet(d.cat),
   behavior: d => behaviorSheet(d.cat),
+  'day-prev': () => { S.viewDay = addDays(viewDay(), -1); S.swipeAnim = 'from-left'; render(); },
+  'day-next': () => { const n = addDays(viewDay(), 1); S.viewDay = n >= today() ? null : n; S.swipeAnim = 'from-right'; render(); },
+  'day-today': () => { S.viewDay = null; S.swipeAnim = 'from-right'; render(); },
   'today-cat': d => { S.todayCat = d.cat; try { localStorage.setItem('todayCat', d.cat); } catch (e) {} render(); },
   'add-counter': d => counterAddSheet(d.cat),
   'counter-del': d => { const k = byId(S.counters, d.id); confirmSheet(`Remove “${k.label}” button?`, 'Past entries stay in the history.', 'Remove', () => remove('counters', k.id)); },
@@ -1125,8 +1139,8 @@ document.addEventListener('touchend', e => {
   if (swX == null) return;
   const dx = e.changedTouches[0].clientX - swX, dy = e.changedTouches[0].clientY - swY; swX = null;
   if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * .6) return;
-  const i = S.cats.findIndex(c => c.id === S.todayCat), j = i + (dx < 0 ? 1 : -1);
-  if (S.cats[j]) ACT['today-cat']({ cat: S.cats[j].id });
+  if (dx > 0) ACT['day-prev']();
+  else if (!onToday()) ACT['day-next']();
 }, { passive: true });
 
 /* ---------- auth & start ---------- */
