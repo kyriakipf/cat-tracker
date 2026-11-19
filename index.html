@@ -31,8 +31,26 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
-  <script src="config.js"></script>
-  <script src="demo.js"></script>
-  <script src="app.js"></script>
+  <script>
+  /* Always load the newest version: ask GitHub which version is live (never cached),
+     then load the app files with that version in their address so no old copy is used. */
+  (function () {
+    var last = null, done = false;
+    try { last = localStorage.getItem('appVersion'); } catch (e) {}
+    function go(v) {
+      if (done) return; done = true;
+      v = (v && /^[\w.-]{1,40}$/.test(v)) ? v : (last || '0');
+      try { localStorage.setItem('appVersion', v); } catch (e) {}
+      var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'style.css?v=' + v; document.head.appendChild(css);
+      ['config.js', 'demo.js', 'app.js'].forEach(function (f) {
+        var s = document.createElement('script'); s.src = f + '?v=' + v; s.async = false; document.body.appendChild(s);
+      });
+    }
+    setTimeout(function () { go(null); }, 3000); // offline or slow: use the last known version
+    fetch('version.txt?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (t) { go(t && t.trim()); }, function () { go(null); });
+  })();
+  </script>
 </body>
 </html>

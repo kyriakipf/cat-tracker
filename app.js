@@ -15,7 +15,7 @@ const S = {
   cats: [], diets: [], meals: [], counters: [], events: [], meds: [], health: [],
   catId: null, histCat: 'all', histKind: 'all', histLimit: 150, healthCat: 'all',
 };
-const APP_VERSION = '2026-11-19.1';
+const APP_VERSION = '2026-11-19.2';
 const VIEW_KEYS = ['tab', 'catId', 'healthTab', 'healthCat', 'histCat', 'histKind'];
 try { Object.assign(S, Object.fromEntries(Object.entries(JSON.parse(localStorage.getItem('view') || '{}')).filter(([k]) => VIEW_KEYS.includes(k)))); } catch (e) {}
 if (!['today', 'health', 'history', 'cats'].includes(S.tab)) S.tab = 'today';
